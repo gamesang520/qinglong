@@ -90,7 +90,9 @@ export default class OpenService {
     }
     try {
       const result = await this.find(condition);
-      return result.map((x) => ({ ...x, tokens: [] }));
+      return result
+        .filter((x) => x.name !== 'system')
+        .map((x) => ({ ...x, tokens: [] }));
     } catch (error) {
       throw error;
     }
@@ -108,12 +110,26 @@ export default class OpenService {
     client_id: string;
     client_secret: string;
   }): Promise<any> {
-    const token = uuidV4();
+    let token = uuidV4();
     const expiration = Math.round(Date.now() / 1000) + 2592000; // 2592000 30天
     const doc = await AppModel.findOne({ where: { client_id, client_secret } });
     if (doc) {
+      const timestamp = Math.round(Date.now() / 1000);
+      const invalidTokens = (doc.tokens || []).filter(
+        (x) => x.expiration >= timestamp,
+      );
+      let tokens = invalidTokens;
+      if (invalidTokens.length > 5) {
+        tokens = [
+          ...invalidTokens.slice(0, 4),
+          { ...invalidTokens[4], expiration },
+        ];
+        token = invalidTokens[4].value;
+      } else {
+        tokens = [...invalidTokens, { value: token, expiration }];
+      }
       await AppModel.update(
-        { tokens: [...(doc.tokens || []), { value: token, expiration }] },
+        { tokens },
         { where: { client_id, client_secret } },
       );
       return {
@@ -127,5 +143,36 @@ export default class OpenService {
     } else {
       return { code: 400, message: 'client_id或client_seret有误' };
     }
+  }
+
+  public async findSystemToken(): Promise<{
+    value: string;
+    expiration: number;
+  }> {
+    let systemApp = (await AppModel.findOne({
+      where: { name: 'system' },
+    })) as App;
+    if (!systemApp) {
+      systemApp = await this.create({
+        name: 'system',
+        scopes: ['crons', 'system'],
+      } as App);
+    }
+    const nowTime = Math.round(Date.now() / 1000);
+    let token;
+    if (
+      !systemApp.tokens ||
+      !systemApp.tokens.length ||
+      nowTime > [...systemApp.tokens].pop()!.expiration
+    ) {
+      const authToken = await this.authToken({
+        client_id: systemApp.client_id,
+        client_secret: systemApp.client_secret,
+      });
+      token = authToken.data;
+    } else {
+      token = [...systemApp.tokens].pop();
+    }
+    return token;
   }
 }

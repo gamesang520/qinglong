@@ -4,15 +4,22 @@ const CompressionPlugin = require('compression-webpack-plugin');
 export default defineConfig({
   hash: true,
   layout: false,
+  outputPath: 'static/dist',
   nodeModulesTransform: {
     type: 'none',
   },
   fastRefresh: {},
+  esbuild: {},
+  webpack5: {},
   dynamicImport: {
     loading: '@/components/pageLoading',
   },
   favicon: '/images/g5.ico',
   proxy: {
+    '/api/public': {
+      target: 'http://127.0.0.1:5400/',
+      changeOrigin: true,
+    },
     '/api': {
       target: 'http://127.0.0.1:5600/',
       changeOrigin: true,

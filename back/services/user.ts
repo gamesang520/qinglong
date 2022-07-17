@@ -13,7 +13,7 @@ import { Request } from 'express';
 import ScheduleService from './schedule';
 import { spawn } from 'child_process';
 import SockService from './sock';
-import got from 'got';
+import dayjs from 'dayjs';
 
 @Service()
 export default class UserService {
@@ -111,7 +111,7 @@ export default class UserService {
         });
         await this.notificationService.notify(
           '登录通知',
-          `你于${new Date(timestamp).toLocaleString()}在 ${address} ${
+          `你于${dayjs(timestamp).format('YYYY-MM-DD HH:mm:ss')}在 ${address} ${
             req.platform
           }端 登录成功，ip地址 ${ip}`,
         );
@@ -140,7 +140,7 @@ export default class UserService {
         });
         await this.notificationService.notify(
           '登录通知',
-          `你于${new Date(timestamp).toLocaleString()}在 ${address} ${
+          `你于${dayjs(timestamp).format('YYYY-MM-DD HH:mm:ss')}在 ${address} ${
             req.platform
           }端 登录失败，ip地址 ${ip}`,
         );
@@ -219,6 +219,12 @@ export default class UserService {
     const authInfo = this.getAuthInfo();
     this.updateAuthInfo(authInfo, { username, password });
     return { code: 200, message: '更新成功' };
+  }
+
+  public async updateAvatar(avatar: string) {
+    const authInfo = this.getAuthInfo();
+    this.updateAuthInfo(authInfo, { avatar });
+    return { code: 200, data: avatar, message: '更新成功' };
   }
 
   public getUserInfo(): Promise<any> {
@@ -307,11 +313,6 @@ export default class UserService {
     return (doc && doc.info) || {};
   }
 
-  public async getLogRemoveFrequency() {
-    const doc = await this.getDb({ type: AuthDataType.removeLogFrequency });
-    return (doc && doc.info) || {};
-  }
-
   private async updateAuthDb(payload: AuthInfo): Promise<any> {
     let doc = await AuthModel.findOne({ type: payload.type });
     if (doc) {
@@ -345,116 +346,7 @@ export default class UserService {
       });
       return { code: 200, data: { ...result, code } };
     } else {
-      return { code: 400, data: '通知发送失败，请检查参数' };
+      return { code: 400, message: '通知发送失败，请检查参数' };
     }
-  }
-
-  public async updateLogRemoveFrequency(frequency: number) {
-    const result = await this.updateAuthDb({
-      type: AuthDataType.removeLogFrequency,
-      info: { frequency },
-    });
-    const cron = {
-      id: result.id,
-      name: '删除日志',
-      command: `ql rmlog ${frequency}`,
-      schedule: `5 23 */${frequency} * *`,
-    };
-    await this.scheduleService.cancelSchedule(cron);
-    if (frequency > 0) {
-      await this.scheduleService.generateSchedule(cron);
-    }
-    return { code: 200, data: { ...cron } };
-  }
-
-  public async checkUpdate() {
-    try {
-      const versionRegx = /.*export const version = \'(.*)\'\;/;
-      const logRegx = /.*export const changeLog = \`((.*\n.*)+)\`;/;
-
-      const currentVersionFile = fs.readFileSync(config.versionFile, 'utf8');
-      const currentVersion = currentVersionFile.match(versionRegx)![1];
-
-      let lastVersion = '';
-      let lastLog = '';
-      try {
-        const result = await Promise.race([
-          got.get(config.lastVersionFile, { timeout: 1000, retry: 0 }),
-          got.get(`https://ghproxy.com/${config.lastVersionFile}`, {
-            timeout: 5000,
-            retry: 0,
-          }),
-        ]);
-        const lastVersionFileContent = result.body;
-        lastVersion = lastVersionFileContent.match(versionRegx)![1];
-        lastLog = lastVersionFileContent.match(logRegx)
-          ? lastVersionFileContent.match(logRegx)![1]
-          : '';
-      } catch (error) {}
-
-      return {
-        code: 200,
-        data: {
-          hasNewVersion: this.checkHasNewVersion(currentVersion, lastVersion),
-          lastVersion,
-          lastLog,
-        },
-      };
-    } catch (error: any) {
-      return {
-        code: 400,
-        data: error.message,
-      };
-    }
-  }
-
-  private checkHasNewVersion(curVersion: string, lastVersion: string) {
-    const curArr = curVersion.split('.').map((x) => parseInt(x, 10));
-    const lastArr = lastVersion.split('.').map((x) => parseInt(x, 10));
-    if (curArr[0] < lastArr[0]) {
-      return true;
-    }
-    if (curArr[0] === lastArr[0] && curArr[1] < lastArr[1]) {
-      return true;
-    }
-    if (
-      curArr[0] === lastArr[0] &&
-      curArr[1] === lastArr[1] &&
-      curArr[2] < lastArr[2]
-    ) {
-      return true;
-    }
-    return false;
-  }
-
-  public async updateSystem() {
-    const cp = spawn('ql -l update', { shell: '/bin/bash' });
-
-    this.sockService.sendMessage({
-      type: 'updateSystemVersion',
-      message: `开始更新系统`,
-    });
-    cp.stdout.on('data', (data) => {
-      this.sockService.sendMessage({
-        type: 'updateSystemVersion',
-        message: data.toString(),
-      });
-    });
-
-    cp.stderr.on('data', (data) => {
-      this.sockService.sendMessage({
-        type: 'updateSystemVersion',
-        message: data.toString(),
-      });
-    });
-
-    cp.on('error', (err) => {
-      this.sockService.sendMessage({
-        type: 'updateSystemVersion',
-        message: JSON.stringify(err),
-      });
-    });
-
-    return { code: 200 };
   }
 }

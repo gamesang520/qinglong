@@ -9,6 +9,8 @@ import { getFileContentByName, concurrentRun, fileExist } from '../config/util';
 import { promises, existsSync } from 'fs';
 import { promisify } from 'util';
 import { Op } from 'sequelize';
+import path from 'path';
+import dayjs from 'dayjs';
 
 @Service()
 export default class CronService {
@@ -16,7 +18,7 @@ export default class CronService {
 
   private isSixCron(cron: Crontab) {
     const { schedule } = cron;
-    if (schedule.split(/ +/).length === 6) {
+    if (schedule?.split(/ +/).length === 6) {
       return true;
     }
     return false;
@@ -194,14 +196,23 @@ export default class CronService {
         }
       }
       const err = await this.killTask(doc.command);
-      const logFileExist = await fileExist(doc.log_path);
-      if (doc.log_path && logFileExist) {
+      const absolutePath = path.resolve(config.logPath, `${doc.log_path}`);
+      const logFileExist = doc.log_path && (await fileExist(absolutePath));
+
+      const endTime = dayjs();
+      const diffTimeStr = doc.last_execution_time
+        ? `，耗时 ${endTime.diff(
+            dayjs(doc.last_execution_time * 1000),
+            'second',
+          )}`
+        : '';
+      if (logFileExist) {
         const str = err ? `\n${err}` : '';
         fs.appendFileSync(
-          `${doc.log_path}`,
-          `${str}\n## 执行结束...  ${new Date()
-            .toLocaleString('zh', { hour12: false })
-            .replace(' 24:', ' 00:')} `,
+          `${absolutePath}`,
+          `${str}\n## 执行结束... ${endTime.format(
+            'YYYY-MM-DD HH:mm:ss',
+          )}${diffTimeStr}`,
         );
       }
     }
@@ -229,12 +240,16 @@ export default class CronService {
         pids = pids.slice(0, 3);
         for (const id of pids) {
           const c = `kill -9 ${id.slice(1)}`;
-          const { stdout, stderr } = await execAsync(c);
-          if (stderr) {
-            killLogs.push(stderr);
-          }
-          if (stdout) {
-            killLogs.push(stdout);
+          try {
+            const { stdout, stderr } = await execAsync(c);
+            if (stderr) {
+              killLogs.push(stderr);
+            }
+            if (stdout) {
+              killLogs.push(stdout);
+            }
+          } catch (error: any) {
+            killLogs.push(error.message);
           }
         }
       }
@@ -253,6 +268,8 @@ export default class CronService {
       }
 
       let { id, command, log_path } = cron;
+      const absolutePath = path.resolve(config.logPath, `${log_path}`);
+      const logFileExist = log_path && (await fileExist(absolutePath));
 
       this.logger.silly('Running job');
       this.logger.silly('ID: ' + id);
@@ -273,13 +290,13 @@ export default class CronService {
         { where: { id } },
       );
       cp.stderr.on('data', (data) => {
-        if (log_path) {
-          fs.appendFileSync(`${log_path}`, `${data}`);
+        if (logFileExist) {
+          fs.appendFileSync(`${absolutePath}`, `${data}`);
         }
       });
       cp.on('error', (err) => {
-        if (log_path) {
-          fs.appendFileSync(`${log_path}`, `${JSON.stringify(err)}`);
+        if (logFileExist) {
+          fs.appendFileSync(`${absolutePath}`, `${JSON.stringify(err)}`);
         }
       });
 
@@ -320,8 +337,10 @@ export default class CronService {
       return '';
     }
 
-    if (doc.log_path) {
-      return getFileContentByName(`${doc.log_path}`);
+    const absolutePath = path.resolve(config.logPath, `${doc.log_path}`);
+    const logFileExist = doc.log_path && (await fileExist(absolutePath));
+    if (logFileExist) {
+      return getFileContentByName(`${absolutePath}`);
     }
     const [, commandStr, url] = doc.command.split(/ +/);
     let logPath = this.getKey(commandStr);
@@ -344,14 +363,74 @@ export default class CronService {
     }
   }
 
-  private getKey(command: string) {
+  public async logs(id: number) {
+    const doc = await this.getDb({ id });
+    if (!doc) {
+      return [];
+    }
+
+    if (doc.log_path) {
+      const relativeDir = path.dirname(`${doc.log_path}`);
+      const dir = path.resolve(config.logPath, relativeDir);
+      if (existsSync(dir)) {
+        let files = await promises.readdir(dir);
+        return files
+          .map((x) => ({
+            filename: x,
+            directory: relativeDir.replace(config.logPath, ''),
+            time: fs.statSync(`${dir}/${x}`).mtime.getTime(),
+          }))
+          .sort((a, b) => b.time - a.time);
+      }
+    }
+
+    const [, commandStr, url] = doc.command.split(/ +/);
+    let logPath = this.getKey(commandStr);
+    const isQlCommand = doc.command.startsWith('ql ');
+    const key =
+      (url && ['repo', 'raw'].includes(commandStr) && this.getKey(url)) ||
+      logPath;
+    if (isQlCommand) {
+      logPath = 'update';
+    }
+    let logDir = `${config.logPath}${logPath}`;
+    if (existsSync(logDir)) {
+      let files = await promises.readdir(logDir);
+      if (isQlCommand) {
+        files = files.filter((x) => x.includes(key));
+      }
+      return files
+        .map((x) => ({
+          filename: x,
+          directory: logPath,
+          time: fs.statSync(`${logDir}/${x}`).mtime.getTime(),
+        }))
+        .sort((a, b) => b.time - a.time);
+    } else {
+      return [];
+    }
+  }
+
+  private getKey(command: string): string {
     const start =
       command.lastIndexOf('/') !== -1 ? command.lastIndexOf('/') + 1 : 0;
     const end =
       command.lastIndexOf('.') !== -1
         ? command.lastIndexOf('.')
         : command.length;
-    return command.substring(start, end);
+
+    const tmpStr = command.substring(0, start - 1);
+    let index = 0;
+    if (tmpStr.lastIndexOf('/') !== -1 && tmpStr.startsWith('http')) {
+      index = tmpStr.lastIndexOf('/');
+    } else if (tmpStr.lastIndexOf(':') !== -1 && tmpStr.startsWith('git@')) {
+      index = tmpStr.lastIndexOf(':');
+    }
+    if (index) {
+      return `${tmpStr.substring(index + 1)}_${command.substring(start, end)}`;
+    } else {
+      return command.substring(start, end);
+    }
   }
 
   private make_command(tab: Crontab) {
@@ -364,7 +443,7 @@ export default class CronService {
     var crontab_string = '';
     tabs.forEach((tab) => {
       const _schedule = tab.schedule && tab.schedule.split(/ +/);
-      if (tab.isDisabled === 1 || _schedule.length !== 5) {
+      if (tab.isDisabled === 1 || _schedule!.length !== 5) {
         crontab_string += '# ';
         crontab_string += tab.schedule;
         crontab_string += ' ';
@@ -390,22 +469,22 @@ export default class CronService {
 
   public import_crontab() {
     exec('crontab -l', (error, stdout, stderr) => {
-      var lines = stdout.split('\n');
-      var namePrefix = new Date().getTime();
+      const lines = stdout.split('\n');
+      const namePrefix = new Date().getTime();
 
       lines.reverse().forEach(async (line, index) => {
         line = line.replace(/\t+/g, ' ');
-        var regex =
+        const regex =
           /^((\@[a-zA-Z]+\s+)|(([^\s]+)\s+([^\s]+)\s+([^\s]+)\s+([^\s]+)\s+([^\s]+)\s+))/;
-        var command = line.replace(regex, '').trim();
-        var schedule = line.replace(command, '').trim();
+        const command = line.replace(regex, '').trim();
+        const schedule = line.replace(command, '').trim();
 
         if (
           command &&
           schedule &&
           cron_parser.parseExpression(schedule).hasNext()
         ) {
-          var name = namePrefix + '_' + index;
+          const name = namePrefix + '_' + index;
 
           const _crontab = await CrontabModel.findOne({
             where: { command, schedule },

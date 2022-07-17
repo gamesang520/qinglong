@@ -34,12 +34,16 @@ let GOBOT_QQ = ''; // 如果GOBOT_URL设置 /send_private_msg 则需要填入 us
 //(环境变量名 PUSH_KEY)
 let SCKEY = '';
 
+// =======================================PushDeer通知设置区域===========================================
+//此处填你申请的PushDeer KEY.
+//(环境变量名 DEER_KEY)
+let PUSHDEER_KEY = '';
+
 // =======================================Bark App通知设置区域===========================================
 //此处填你BarkAPP的信息(IP/设备码，例如：https://api.day.app/XXXXXXXX)
 let BARK_PUSH = '';
 //BARK app推送图标,自定义推送图标(需iOS15或以上)
-let BARK_ICON =
-  'https://img.gejiba.com/images/a3f551e09ac19add4c49ec16228729c5.png';
+let BARK_ICON = 'http://qn.whyour.cn/logo.png';
 //BARK app推送铃声,铃声列表去APP查看复制填写
 let BARK_SOUND = '';
 //BARK app推送消息的分组, 默认为"QingLong"
@@ -116,6 +120,10 @@ if (process.env.GOBOT_QQ) {
 
 if (process.env.PUSH_KEY) {
   SCKEY = process.env.PUSH_KEY;
+}
+
+if (process.env.DEER_KEY) {
+  PUSHDEER_KEY = process.env.DEER_KEY;
 }
 
 if (process.env.QQ_SKEY) {
@@ -354,6 +362,52 @@ function serverNotify(text, desp, time = 2100) {
   });
 }
 
+function PushDeerNotify(text, desp, time = 2100) {
+  return new Promise((resolve) => {
+    if (PUSHDEER_KEY) {
+      // PushDeer 建议对消息内容进行 urlencode
+      desp = encodeURI(desp);
+      const options = {
+        url: `https://api2.pushdeer.com/message/push`,
+        body: `pushkey=${PUSHDEER_KEY}&text=${text}&desp=${desp}&type=markdown`,
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        timeout,
+      };
+      setTimeout(() => {
+        $.post(options, (err, resp, data) => {
+          try {
+            if (err) {
+              console.log('发送通知调用API失败！！\n');
+              console.log(err);
+            } else {
+              data = JSON.parse(data);
+              // 通过返回的result的长度来判断是否成功
+              if (
+                data.content.result.length !== undefined &&
+                data.content.result.length > 0
+              ) {
+                console.log('PushDeer发送通知消息成功🎉\n');
+              } else {
+                console.log(
+                  `PushDeer发送通知消息异常\n${JSON.stringify(data)}`,
+                );
+              }
+            }
+          } catch (e) {
+            $.logErr(e, resp);
+          } finally {
+            resolve(data);
+          }
+        });
+      }, time);
+    } else {
+      resolve();
+    }
+  });
+}
+
 function CoolPush(text, desp) {
   return new Promise((resolve) => {
     if (QQ_SKEY) {
@@ -475,9 +529,13 @@ function tgBotNotify(text, desp) {
     if (TG_BOT_TOKEN && TG_USER_ID) {
       const options = {
         url: `https://${TG_API_HOST}/bot${TG_BOT_TOKEN}/sendMessage`,
-        body: `chat_id=${TG_USER_ID}&text=${text}\n\n${desp}&disable_web_page_preview=true`,
+        json: {
+          chat_id: `${TG_USER_ID}`,
+          text: `${text}\n\n${desp}`,
+          disable_web_page_preview: true,
+        },
         headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
+          'Content-Type': 'application/json',
         },
         timeout,
       };
